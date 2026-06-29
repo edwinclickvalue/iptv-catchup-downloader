@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IPTV Catch-up Downloader</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0f0f13;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 16px;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 32px;
+    letter-spacing: 0.03em;
+  }
+
+  .card {
+    background: #1a1a24;
+    border: 1px solid #2a2a3a;
+    border-radius: 12px;
+    padding: 28px;
+    width: 100%;
+    max-width: 560px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #888;
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  input, select {
+    width: 100%;
+    padding: 10px 14px;
+    background: #0f0f13;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    color: #e0e0e0;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input:focus, select:focus { border-color: #5566ff; }
+
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  #search-wrap { position: relative; }
+  #search {
+    padding-left: 36px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23666' viewBox='0 0 16 16'%3E%3Cpath d='M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398l3.85 3.85a1 1 0 0 0 1.415-1.415l-3.868-3.833zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: 12px center;
+  }
+
+  #channel-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    background: #0f0f13;
+    display: none;
+    margin-top: 4px;
+  }
+  #channel-list.visible { display: block; }
+
+  .channel-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    border-bottom: 1px solid #1e1e2a;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.1s;
+  }
+  .channel-item:last-child { border-bottom: none; }
+  .channel-item:hover { background: #1a1a2e; }
+  .channel-item.selected { background: #1e2050; color: #7788ff; }
+  .badge {
+    font-size: 0.7rem;
+    color: #555;
+    background: #1a1a24;
+    padding: 2px 7px;
+    border-radius: 10px;
+    border: 1px solid #2a2a3a;
+    white-space: nowrap;
+  }
+
+  #selected-display {
+    padding: 10px 14px;
+    background: #0f0f13;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    color: #aaa;
+    min-height: 40px;
+    margin-top: 8px;
+  }
+  #selected-display.has-value { color: #e0e0e0; }
+
+  /* EPG */
+  #epg-section { display: none; }
+  #epg-section.visible { display: block; }
+
+  #epg-loading {
+    font-size: 0.82rem;
+    color: #666;
+    padding: 8px 0;
+  }
+
+  #epg-list {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    background: #0f0f13;
+  }
+
+  .epg-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #1e1e2a;
+    transition: background 0.1s;
+  }
+  .epg-item:last-child { border-bottom: none; }
+  .epg-item:hover { background: #1a1a2e; }
+  .epg-item.selected { background: #1e2050; }
+  .epg-item.no-archive { opacity: 0.4; cursor: default; }
+  .epg-item.no-archive:hover { background: transparent; }
+
+  .epg-title {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #e0e0e0;
+  }
+  .epg-item.selected .epg-title { color: #7788ff; }
+  .epg-meta {
+    font-size: 0.75rem;
+    color: #666;
+    margin-top: 3px;
+    display: flex;
+    gap: 10px;
+  }
+  .epg-archive-badge {
+    font-size: 0.65rem;
+    background: #1c3a1c;
+    color: #5c8;
+    border: 1px solid #2a4a2a;
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .epg-noarchive-badge {
+    font-size: 0.65rem;
+    background: #2a1a1a;
+    color: #a55;
+    border: 1px solid #3a2a2a;
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+
+  /* divider */
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.72rem;
+    color: #444;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .divider::before, .divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: #2a2a3a;
+  }
+
+  button {
+    padding: 12px;
+    background: #4455ee;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover:not(:disabled) { background: #5566ff; }
+  button:disabled { background: #2a2a3a; color: #555; cursor: default; }
+
+  #log-wrap {
+    display: none;
+    background: #0a0a0e;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    padding: 14px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: "SF Mono", "Fira Mono", monospace;
+    font-size: 0.75rem;
+    color: #7a9;
+  }
+  #log-wrap.visible { display: block; }
+
+  .status-ok  { color: #5c8; font-weight: 600; }
+  .status-err { color: #e55; font-weight: 600; }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>📺 IPTV Catch-up Downloader</h1>
+
+<div class="card">
+
+  <!-- Kanaal -->
+  <div>
+    <label>Kanaal</label>
+    <div id="search-wrap">
+      <input id="search" type="text" placeholder="Zoek kanaal..." autocomplete="off">
+    </div>
+    <div id="channel-list"></div>
+    <div id="selected-display" style="margin-top:8px">Geen kanaal geselecteerd</div>
+  </div>
+
+  <!-- EPG -->
+  <div id="epg-section">
+    <label>Programma (EPG — klik om tijden in te vullen)</label>
+    <div id="epg-loading" style="display:none">EPG laden...</div>
+    <div id="epg-list"></div>
+  </div>
+
+  <div class="divider">of handmatig</div>
+
+  <!-- Datum -->
+  <div>
+    <label>Datum</label>
+    <input id="date" type="date">
+  </div>
+
+  <!-- Tijden -->
+  <div class="row">
+    <div>
+      <label>Begintijd</label>
+      <input id="start" type="time">
+    </div>
+    <div>
+      <label>Eindtijd</label>
+      <input id="end" type="time">
+    </div>
+  </div>
+
+  <!-- Duur info -->
+  <div id="duration-info" style="font-size:0.82rem;color:#666;text-align:center;display:none"></div>
+
+  <button id="dl-btn" disabled>Download</button>
+
+  <div id="log-wrap"></div>
+
+</div>
+
+<script>
+let channels = [];
+let selectedChannel = null;
+let activeEventSource = null;
+
+// Default datum = gisteren
+const yesterday = new Date();
+yesterday.setDate(yesterday.getDate() - 1);
+document.getElementById("date").value = yesterday.toISOString().slice(0, 10);
+
+// Kanalen laden
+fetch("/api/channels")
+  .then(r => r.json())
+  .then(data => {
+    channels = data;
+    renderChannels(channels);
+  });
+
+function renderChannels(list) {
+  const el = document.getElementById("channel-list");
+  el.innerHTML = "";
+  list.forEach(ch => {
+    const div = document.createElement("div");
+    div.className = "channel-item" + (selectedChannel?.id === ch.id ? " selected" : "");
+    div.innerHTML = `<span>${ch.name}</span><span class="badge">${ch.days}d</span>`;
+    div.addEventListener("click", () => selectChannel(ch));
+    el.appendChild(div);
+  });
+}
+
+function selectChannel(ch) {
+  selectedChannel = ch;
+  document.getElementById("selected-display").textContent = ch.name;
+  document.getElementById("selected-display").classList.add("has-value");
+  document.getElementById("search").value = "";
+  document.getElementById("channel-list").classList.remove("visible");
+  loadEpg(ch.id);
+  validate();
+}
+
+// EPG laden
+function loadEpg(streamId) {
+  const section = document.getElementById("epg-section");
+  const loading = document.getElementById("epg-loading");
+  const list    = document.getElementById("epg-list");
+
+  section.classList.add("visible");
+  list.innerHTML = "";
+  loading.style.display = "block";
+
+  fetch(`/api/epg/${streamId}`)
+    .then(r => r.json())
+    .then(programs => {
+      loading.style.display = "none";
+      if (!programs.length) {
+        list.innerHTML = '<div style="padding:12px;color:#555;font-size:0.85rem">Geen EPG beschikbaar</div>';
+        return;
+      }
+      programs.forEach(p => {
+        const start = p.start.slice(0, 16);  // "2026-05-02 20:30"
+        const end   = p.end.slice(0, 16);
+        const datePart  = start.slice(0, 10);
+        const startTime = start.slice(11, 16);
+        const endTime   = end.slice(11, 16);
+
+        const canDownload = p.has_archive === 1;
+
+        const div = document.createElement("div");
+        div.className = "epg-item" + (canDownload ? "" : " no-archive");
+
+        const archiveBadge = canDownload
+          ? `<span class="epg-archive-badge">beschikbaar</span>`
+          : `<span class="epg-noarchive-badge">niet beschikbaar</span>`;
+
+        div.innerHTML = `
+          <div class="epg-title">${p.title}</div>
+          <div class="epg-meta">
+            <span>${datePart} ${startTime}–${endTime}</span>
+            ${archiveBadge}
+          </div>`;
+
+        if (canDownload) {
+          div.addEventListener("click", () => {
+            // Deselect others
+            document.querySelectorAll(".epg-item.selected").forEach(e => e.classList.remove("selected"));
+            div.classList.add("selected");
+
+            // Fill in form fields
+            document.getElementById("date").value  = datePart;
+            document.getElementById("start").value = startTime;
+            document.getElementById("end").value   = endTime;
+            updateDuration();
+            validate();
+          });
+        }
+
+        list.appendChild(div);
+      });
+    })
+    .catch(() => {
+      loading.style.display = "none";
+      list.innerHTML = '<div style="padding:12px;color:#a55;font-size:0.85rem">EPG ophalen mislukt</div>';
+    });
+}
+
+document.getElementById("search").addEventListener("focus", () => {
+  document.getElementById("channel-list").classList.add("visible");
+});
+
+document.getElementById("search").addEventListener("input", e => {
+  const q = e.target.value.toLowerCase();
+  const filtered = channels.filter(c => c.name.toLowerCase().includes(q));
+  renderChannels(filtered);
+  document.getElementById("channel-list").classList.add("visible");
+});
+
+document.addEventListener("click", e => {
+  if (!e.target.closest("#search-wrap") && !e.target.closest("#channel-list")) {
+    document.getElementById("channel-list").classList.remove("visible");
+  }
+});
+
+// Duur berekenen
+["start","end","date"].forEach(id => {
+  document.getElementById(id).addEventListener("change", () => {
+    updateDuration();
+    validate();
+  });
+});
+
+function updateDuration() {
+  const s = document.getElementById("start").value;
+  const e = document.getElementById("end").value;
+  const info = document.getElementById("duration-info");
+  if (!s || !e) { info.style.display = "none"; return; }
+  const [sh,sm] = s.split(":").map(Number);
+  const [eh,em] = e.split(":").map(Number);
+  let dur = (eh*60+em) - (sh*60+sm);
+  if (dur <= 0) dur += 24*60;
+  const h = Math.floor(dur/60), m = dur%60;
+  info.textContent = `Duur: ${h > 0 ? h+"u " : ""}${m}min`;
+  info.style.display = "block";
+}
+
+function validate() {
+  const ok = selectedChannel
+    && document.getElementById("date").value
+    && document.getElementById("start").value
+    && document.getElementById("end").value;
+  document.getElementById("dl-btn").disabled = !ok;
+}
+
+// Download
+document.getElementById("dl-btn").addEventListener("click", () => {
+  if (!selectedChannel) return;
+
+  const payload = {
+    stream_id: selectedChannel.id,
+    name: selectedChannel.name,
+    date: document.getElementById("date").value,
+    start_time: document.getElementById("start").value,
+    end_time: document.getElementById("end").value,
+  };
+
+  document.getElementById("dl-btn").disabled = true;
+  document.getElementById("dl-btn").textContent = "Bezig...";
+
+  const log = document.getElementById("log-wrap");
+  log.innerHTML = "";
+  log.classList.add("visible");
+
+  fetch("/api/download", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload)
+  })
+  .then(r => r.json())
+  .then(({dl_id, out, duration}) => {
+    log.innerHTML += `<div>📁 ${out}</div><div>⏱ ${duration} minuten</div><hr style="border-color:#2a2a3a;margin:8px 0">`;
+
+    if (activeEventSource) activeEventSource.close();
+    activeEventSource = new EventSource(`/api/status/${dl_id}`);
+
+    activeEventSource.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.line) {
+        if (data.line.includes("time=") || data.line.includes("frame=")) {
+          const existing = log.querySelector(".progress-line");
+          if (existing) existing.textContent = data.line;
+          else {
+            const d = document.createElement("div");
+            d.className = "progress-line";
+            d.textContent = data.line;
+            log.appendChild(d);
+          }
+        } else if (data.line.trim()) {
+          const d = document.createElement("div");
+          d.textContent = data.line;
+          log.appendChild(d);
+        }
+        log.scrollTop = log.scrollHeight;
+      }
+      if (data.done) {
+        activeEventSource.close();
+        const d = document.createElement("div");
+        d.className = data.ok ? "status-ok" : "status-err";
+        d.textContent = data.ok ? "✓ Download klaar!" : "✗ Fout bij downloaden";
+        log.appendChild(d);
+        log.scrollTop = log.scrollHeight;
+        document.getElementById("dl-btn").disabled = false;
+        document.getElementById("dl-btn").textContent = "Download";
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>
