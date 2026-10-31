@@ -257,6 +257,10 @@
     flex: none; accent-color: #e10600; cursor: pointer;
   }
   .f1-item .epg-meta { align-items: center; }
+  .f1-session { font-size: 0.68rem; font-weight: 600; color: #fff; background: #c00500; border-radius: 4px; padding: 1px 6px; }
+  .f1-rerun { font-size: 0.65rem; color: #888; border: 1px solid #2a2a3a; border-radius: 4px; padding: 1px 5px; }
+  .f1-desc { font-size: 0.75rem; color: #777; margin-top: 3px; line-height: 1.35;
+             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .f1-live { font-size: 0.65rem; color: #e10600; border: 1px solid #5a1a1a; border-radius: 4px; padding: 1px 5px; }
   .f1-state { margin-left: auto; font-size: 0.72rem; white-space: nowrap; color: #666; }
   .f1-state.busy { color: #7788ff; }
@@ -391,12 +395,16 @@ fetch("/api/f1")
         <div>
           <div class="epg-title"></div>
           <div class="epg-meta">
+            ${p.session ? `<span class="f1-session">${p.session}</span>` : ""}
             <span>${p.start.slice(0, 16)}–${p.end.slice(11, 16)} · ${fmtDuration(minutesBetween(p.start, p.end))}</span>
-            ${p.live ? '<span class="f1-live">LIVE</span>' : ""}
+            ${p.live ? '<span class="f1-live">LIVE</span>' : (p.session ? '<span class="f1-rerun">herhaling</span>' : "")}
           </div>
+          <div class="f1-desc"></div>
         </div>
         <span class="f1-state"></span>`;
       row.querySelector(".epg-title").textContent = p.title;
+      row.querySelector(".f1-desc").textContent = p.description;
+      row.querySelector(".f1-desc").title = p.description;
       row.querySelector("input").program = p;
       row.querySelector("input").addEventListener("change", f1UpdateButton);
       list.appendChild(row);
@@ -429,7 +437,7 @@ function f1DownloadOne(box) {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
       stream_id: f1Channel.id,
-      name: `F1 ${p.title}`,
+      name: `F1 ${p.title}${p.session ? ` ${p.session}${p.live ? "" : " herhaling"}` : ""}`,
       date: p.start.slice(0, 10),
       start_time: p.start.slice(11, 16),
       end_time: p.end.slice(11, 16),

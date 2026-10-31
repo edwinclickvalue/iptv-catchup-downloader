@@ -42,6 +42,29 @@ def _decode(value):
         return value or ""
 
 
+PRACTICE_NO = {"opening": 1, "first": 1, "second": 2, "third": 3, "final": 3}
+
+
+def session_label(title, description):
+    """What a programme actually is. Sky reuses "<GP> F1 GP" as title for every
+    session, so the description is the only place the session is named."""
+    t, d = title.lower(), description.lower()
+    if "highlights" in t or "hlts" in t:
+        return "Samenvatting"
+    m = re.search(r"\b(opening|first|second|third|final)\b[^.]*\bpractice\b", d)
+    if m:
+        return f"VT{PRACTICE_NO[m.group(1)]}"
+    if re.search(r"sprint (qualifying|shootout)", d):
+        return "Sprint-kwalificatie"
+    if "qualifying" in d and "notebook" not in t:
+        return "Kwalificatie"
+    if re.search(r"\bsprint\b", d) and "practice" not in d:
+        return "Sprint"
+    if re.search(r"\bgrand prix\b|\bf1 gp\b", t) and re.search(r"\brace\b|lights out", d):
+        return "Race"
+    return None
+
+
 def archived_programs(listings, now_ts=None):
     """Programmes that already aired and are in the archive, newest first."""
     if now_ts is None:
@@ -52,12 +75,14 @@ def archived_programs(listings, now_ts=None):
             continue
         if int(e.get("stop_timestamp", 0)) > now_ts:
             continue  # still on air: the archive is not complete yet
+        title, desc = _decode(e.get("title", "")), _decode(e.get("description", ""))
         programs.append({
-            "title":       _decode(e.get("title", "")),
-            "description": _decode(e.get("description", "")),
+            "title":       title,
+            "description": desc,
+            "session":     session_label(title, desc),
             "start":       e.get("start", ""),
             "end":         e.get("end", ""),
-            "live":        _decode(e.get("title", "")).lower().startswith("live"),
+            "live":        title.lower().startswith("live"),
         })
     programs.sort(key=lambda p: p["start"], reverse=True)
     return programs

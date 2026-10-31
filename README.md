@@ -4,7 +4,7 @@ Local web app to download catch-up/time-shift recordings from an Xtream Codes IP
 
 ## Features
 
-- **Sky Sports F1 block**: on open, finds the UK Sky Sports F1 stream with catch-up in the highest quality (probed with ffprobe, cached 6 h) and lists every archived programme as a checkbox; selected programmes download one after another
+- **Sky Sports F1 block**: on open, finds the UK Sky Sports F1 stream with catch-up in the highest quality (probed with ffprobe, cached 6 h) and lists every archived programme as a checkbox with its session (VT1–3, qualifying, sprint, race, highlights; read from the EPG description), live/repeat flag and description; selected programmes download one after another
 - Browse NL channels with catch-up enabled
 - EPG guide per channel (last 3 days) — click a program to auto-fill times
 - Manual date/time entry as fallback

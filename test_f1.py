@@ -74,3 +74,16 @@ def test_probe_returns_empty_on_timeout(monkeypatch):
         raise subprocess.TimeoutExpired("ffprobe", 1)
     monkeypatch.setattr(subprocess, "run", boom)
     assert f1.probe("http://x") == {}
+
+
+def test_session_label_reads_the_description():
+    gp = "Mexico City F1 GP"
+    assert f1.session_label(gp, "The opening Formula 1 practice session of Mexico City Grand Prix weekend.") == "VT1"
+    assert f1.session_label("Live " + gp, "The second Formula 1 practice session of the weekend.") == "VT2"
+    assert f1.session_label(gp, "The third and final practice session.") == "VT3"
+    assert f1.session_label(gp, "Qualifying for the Mexico City Grand Prix.") == "Kwalificatie"
+    assert f1.session_label(gp, "Sprint qualifying from Austin.") == "Sprint-kwalificatie"
+    assert f1.session_label("Mexico City F1 Grand Prix", "It's lights out for the race in Mexico City.") == "Race"
+    assert f1.session_label("US F1 GP Highlights", "It's lights out for the race in Austin.") == "Samenvatting"
+    assert f1.session_label("Ted's Quali Notebook", "Ted looks back on qualifying.") is None
+    assert f1.session_label("The F1 Show", "A sneak peek of the paddock.") is None
