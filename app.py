@@ -5,11 +5,14 @@ import json
 import os
 import subprocess
 import threading
+import time
 import urllib.request
 from datetime import datetime, date, timedelta, timezone
 
 from dotenv import load_dotenv
 load_dotenv()
+
+import f1
 
 app = Flask(__name__)
 
@@ -25,6 +28,44 @@ NL_CAT_IDS = {
 }
 
 _active_downloads = {}  # id -> {"proc": ..., "log": [...], "done": bool}
+
+F1_CACHE_SECONDS = 6 * 3600
+_f1_best = {"channel": None, "at": 0.0}  # probing is slow, so remember the winner
+
+
+def player_api(action, **params):
+    query = "".join(f"&{k}={v}" for k, v in params.items())
+    url = f"{SERVER}/player_api.php?username={USER}&password={PASS}&action={action}{query}"
+    with urllib.request.urlopen(url, timeout=60) as r:
+        return json.load(r)
+
+
+def timeshift_url(stream_id, start_str, duration):
+    """start_str is "YYYY-MM-DD:HH-MM" (Amsterdam time), duration in minutes."""
+    return (
+        f"{SERVER}/streaming/timeshift.php"
+        f"?username={USER}&password={PASS}"
+        f"&typeEnd=.ts&start={start_str}&duration={duration}&stream={stream_id}"
+    )
+
+
+def best_f1_channel():
+    """The UK Sky Sports F1 stream with catch-up in the highest quality."""
+    if _f1_best["channel"] and time.time() - _f1_best["at"] < F1_CACHE_SECONDS:
+        return _f1_best["channel"]
+    cats = {str(c["category_id"]): c["category_name"] for c in player_api("get_live_categories")}
+    probed = []
+    for ch in f1.candidates(player_api("get_live_streams"), cats):
+        listings = player_api("get_simple_data_table", stream_id=ch["id"]).get("epg_listings", [])
+        archived = f1.archived_programs(listings)
+        if archived:
+            start = archived[0]["start"]  # "2026-10-30 19:00:00"
+            ch.update(f1.probe(timeshift_url(ch["id"], f"{start[:10]}:{start[11:13]}-{start[14:16]}", 1)))
+        probed.append(ch)
+    best = f1.pick_best(probed)
+    if best:
+        _f1_best.update(channel=best, at=time.time())
+    return best
 
 
 def fetch_channels():
@@ -93,6 +134,15 @@ def api_epg(stream_id):
     return jsonify(programs)
 
 
+@app.route("/api/f1")
+def api_f1():
+    channel = best_f1_channel()
+    if not channel:
+        return jsonify({"channel": None, "programs": []})
+    listings = player_api("get_simple_data_table", stream_id=channel["id"]).get("epg_listings", [])
+    return jsonify({"channel": channel, "programs": f1.archived_programs(listings)})
+
+
 @app.route("/api/download", methods=["POST"])
 def api_download():
     body = request.json
@@ -111,15 +161,11 @@ def api_download():
     duration = end_min - start_min
 
     ts = start_date.replace("-", "") + f"_{sh:02d}{sm:02d}"
-    safe = name.replace(" ", "_").replace("/", "-").replace("|", "").strip("_")
+    safe = name.replace(" ", "_").replace("/", "-").replace("|", "").replace(":", "").strip("_")
     out  = f"{DOWNLOAD_DIR}/{safe}_{ts}.ts"
 
     start_str = f"{start_date}:{sh:02d}-{sm:02d}"
-    url = (
-        f"{SERVER}/streaming/timeshift.php"
-        f"?username={USER}&password={PASS}"
-        f"&typeEnd=.ts&start={start_str}&duration={duration}&stream={stream_id}"
-    )
+    url = timeshift_url(stream_id, start_str, duration)
 
     dl_id = f"{stream_id}_{ts}"
     _active_downloads[dl_id] = {"log": [], "done": False, "out": out, "duration": duration}

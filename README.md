@@ -4,6 +4,7 @@ Local web app to download catch-up/time-shift recordings from an Xtream Codes IP
 
 ## Features
 
+- **Sky Sports F1 block**: on open, finds the UK Sky Sports F1 stream with catch-up in the highest quality (probed with ffprobe, cached 6 h) and lists every archived programme as a checkbox; selected programmes download one after another
 - Browse NL channels with catch-up enabled
 - EPG guide per channel (last 3 days) — click a program to auto-fill times
 - Manual date/time entry as fallback
@@ -35,11 +36,18 @@ python3 app.py
 
 Open **http://localhost:5123**
 
+## Tests
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
+.venv/bin/python -m pytest -q
+```
+
 ## Configuration (`.env`)
 
 | Variable | Description |
 |---|---|
-| `XTREAM_SERVER` | Full server URL incl. port, e.g. `http://example.com:8080` |
+| `XTREAM_SERVER` | Full server URL incl. port, e.g. `http://example.com` (add a port only if your provider gives one) |
 | `XTREAM_USER` | Xtream username |
 | `XTREAM_PASS` | Xtream password |
 | `DOWNLOAD_DIR` | Download folder (default: `~/Downloads`) |

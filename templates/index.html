@@ -224,6 +224,57 @@
   .status-ok  { color: #5c8; font-weight: 600; }
   .status-err { color: #e55; font-weight: 600; }
 
+  /* Sky Sports F1 */
+  #f1-card { margin-bottom: 24px; border-color: #3a1a1a; }
+  .f1-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .f1-head h2 { font-size: 1.05rem; font-weight: 600; color: #fff; }
+  .f1-head h2 span { color: #e10600; }
+  #f1-channel { font-size: 0.75rem; color: #666; text-align: right; }
+  #f1-status { font-size: 0.82rem; color: #666; }
+
+  #f1-list {
+    max-height: 340px;
+    overflow-y: auto;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    background: #0f0f13;
+  }
+  .f1-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #1e1e2a;
+    cursor: pointer;
+    transition: background 0.1s;
+    /* .f1-item is een <label>; zet de formulierlabel-stijl terug. */
+    text-transform: none; letter-spacing: normal; font-size: inherit; color: inherit; margin: 0;
+  }
+  .f1-item:last-child { border-bottom: none; }
+  .f1-item:hover { background: #1a1a2e; }
+  .f1-item input[type="checkbox"] {
+    width: 16px; height: 16px; margin-top: 2px; padding: 0;
+    flex: none; accent-color: #e10600; cursor: pointer;
+  }
+  .f1-item .epg-meta { align-items: center; }
+  .f1-live { font-size: 0.65rem; color: #e10600; border: 1px solid #5a1a1a; border-radius: 4px; padding: 1px 5px; }
+  .f1-state { margin-left: auto; font-size: 0.72rem; white-space: nowrap; color: #666; }
+  .f1-state.busy { color: #7788ff; }
+  .f1-state.ok   { color: #5c8; }
+  .f1-state.err  { color: #e55; }
+
+  /* Alle knoppen in de F1-balk delen dezelfde box-maat. */
+  .f1-actions { display: flex; gap: 8px; align-items: stretch; }
+  .f1-actions button {
+    font-size: 0.85rem; line-height: 1.2; padding: 10px 14px;
+    border: 1px solid transparent; box-sizing: border-box;
+  }
+  .f1-actions .ghost { background: transparent; border-color: #2a2a3a; color: #aaa; font-weight: 500; }
+  .f1-actions .ghost:hover:not(:disabled) { background: #1a1a2e; }
+  .f1-actions #f1-dl { flex: 1; background: #c00500; }
+  .f1-actions #f1-dl:hover:not(:disabled) { background: #e10600; }
+  .f1-actions #f1-dl:disabled { background: #2a2a3a; }
+
   ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
@@ -232,6 +283,21 @@
 <body>
 
 <h1>📺 IPTV Catch-up Downloader</h1>
+
+<div class="card" id="f1-card">
+  <div class="f1-head">
+    <h2><span>F1</span> Sky Sports F1</h2>
+    <div id="f1-channel"></div>
+  </div>
+  <div id="f1-status">Beschikbare F1-programma's zoeken en beste kwaliteit bepalen...</div>
+  <div id="f1-list" style="display:none"></div>
+  <div class="f1-actions">
+    <button class="ghost" id="f1-all" disabled>Alles</button>
+    <button class="ghost" id="f1-none" disabled>Geen</button>
+    <button id="f1-dl" disabled>Download geselecteerde</button>
+  </div>
+  <div id="f1-log" style="display:none;font-size:0.78rem;color:#7a9;font-family:'SF Mono','Fira Mono',monospace"></div>
+</div>
 
 <div class="card">
 
@@ -282,6 +348,131 @@
 </div>
 
 <script>
+// --- Sky Sports F1 ----------------------------------------------------
+let f1Channel = null;
+
+function minutesBetween(start, end) {
+  let dur = (new Date(end.replace(" ", "T")) - new Date(start.replace(" ", "T"))) / 60000;
+  return dur > 0 ? dur : dur + 24 * 60;
+}
+
+function fmtDuration(min) {
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  if (!h) return `${m}min`;
+  return m ? `${h}u ${m}min` : `${h}u`;
+}
+
+function f1Boxes() { return [...document.querySelectorAll("#f1-list input[type=checkbox]")]; }
+
+function f1UpdateButton() {
+  const n = f1Boxes().filter(b => b.checked).length;
+  const btn = document.getElementById("f1-dl");
+  btn.disabled = n === 0;
+  btn.textContent = n ? `Download geselecteerde (${n})` : "Download geselecteerde";
+}
+
+fetch("/api/f1")
+  .then(r => r.json())
+  .then(({channel, programs}) => {
+    const status = document.getElementById("f1-status");
+    if (!channel) { status.textContent = "Geen Sky Sports F1-zender met catch-up gevonden."; return; }
+    f1Channel = channel;
+    const q = channel.height ? `${channel.height}p` : "kwaliteit onbekend";
+    document.getElementById("f1-channel").textContent = `${channel.name} · ${q}`;
+    if (!programs.length) { status.textContent = "Nog niets in het archief."; return; }
+    status.textContent = `${programs.length} programma's beschikbaar (laatste ${channel.days} dagen)`;
+
+    const list = document.getElementById("f1-list");
+    programs.forEach((p, i) => {
+      const row = document.createElement("label");
+      row.className = "f1-item";
+      row.innerHTML = `
+        <input type="checkbox" data-i="${i}">
+        <div>
+          <div class="epg-title"></div>
+          <div class="epg-meta">
+            <span>${p.start.slice(0, 16)}–${p.end.slice(11, 16)} · ${fmtDuration(minutesBetween(p.start, p.end))}</span>
+            ${p.live ? '<span class="f1-live">LIVE</span>' : ""}
+          </div>
+        </div>
+        <span class="f1-state"></span>`;
+      row.querySelector(".epg-title").textContent = p.title;
+      row.querySelector("input").program = p;
+      row.querySelector("input").addEventListener("change", f1UpdateButton);
+      list.appendChild(row);
+    });
+    list.style.display = "block";
+    document.getElementById("f1-all").disabled = false;
+    document.getElementById("f1-none").disabled = false;
+  })
+  .catch(() => {
+    document.getElementById("f1-status").textContent = "F1-programma's ophalen mislukt.";
+  });
+
+document.getElementById("f1-all").addEventListener("click", () => {
+  f1Boxes().forEach(b => { if (!b.disabled) b.checked = true; });
+  f1UpdateButton();
+});
+document.getElementById("f1-none").addEventListener("click", () => {
+  f1Boxes().forEach(b => b.checked = false);
+  f1UpdateButton();
+});
+
+// Eén voor één: de meeste IPTV-abonnementen staan maar één verbinding toe.
+function f1DownloadOne(box) {
+  const p = box.program;
+  const state = box.closest(".f1-item").querySelector(".f1-state");
+  state.className = "f1-state busy";
+  state.textContent = "bezig...";
+  return fetch("/api/download", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      stream_id: f1Channel.id,
+      name: `F1 ${p.title}`,
+      date: p.start.slice(0, 10),
+      start_time: p.start.slice(11, 16),
+      end_time: p.end.slice(11, 16),
+    }),
+  })
+  .then(r => r.json())
+  .then(({dl_id, out}) => new Promise(resolve => {
+    const es = new EventSource(`/api/status/${dl_id}`);
+    es.onmessage = e => {
+      const data = JSON.parse(e.data);
+      const t = data.line && data.line.match(/time=(\d+:\d+:\d+)/);
+      if (t) state.textContent = t[1];
+      if (data.done || data.error) {
+        es.close();
+        state.className = "f1-state " + (data.ok ? "ok" : "err");
+        state.textContent = data.ok ? "✓ klaar" : "✗ fout";
+        if (data.ok) {
+          const log = document.getElementById("f1-log");
+          log.style.display = "block";
+          log.insertAdjacentHTML("beforeend", "<div></div>");
+          log.lastElementChild.textContent = `📁 ${out}`;
+        }
+        resolve();
+      }
+    };
+  }));
+}
+
+document.getElementById("f1-dl").addEventListener("click", async () => {
+  const boxes = f1Boxes().filter(b => b.checked);
+  const btns = ["f1-dl", "f1-all", "f1-none"].map(id => document.getElementById(id));
+  btns.forEach(b => b.disabled = true);
+  f1Boxes().forEach(b => b.disabled = true);
+  for (const box of boxes) {
+    await f1DownloadOne(box).catch(() => {});
+    box.checked = false;
+  }
+  f1Boxes().forEach(b => b.disabled = false);
+  btns.forEach(b => b.disabled = false);
+  f1UpdateButton();
+});
+
+// --- Handmatig ----------------------------------------------------------
 let channels = [];
 let selectedChannel = null;
 let activeEventSource = null;
