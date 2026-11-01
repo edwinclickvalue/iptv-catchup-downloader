@@ -3,6 +3,7 @@ from flask import Flask, jsonify, render_template, request, Response
 import base64
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -40,6 +41,33 @@ def player_api(action, **params):
         return json.load(r)
 
 
+XMLTV_CACHE_SECONDS = 15 * 60
+_xmltv_cache = {}  # epg channel id -> (fetched at, listings)
+
+
+def xmltv_listings(channel_id, days):
+    """Fallback guide. The 90 MB XMLTV export has data when player_api answers
+    with an empty list, as it did from 1-11-2026."""
+    hit = _xmltv_cache.get(channel_id)
+    if hit and time.time() - hit[0] < XMLTV_CACHE_SECONDS:
+        return hit[1]
+    url = f"{SERVER}/xmltv.php?username={USER}&password={PASS}"
+    with urllib.request.urlopen(url, timeout=120) as r:
+        listings = f1.xmltv_listings(r, channel_id, days=int(days))
+    _xmltv_cache[channel_id] = (time.time(), listings)
+    return listings
+
+
+def epg_listings(channel):
+    """EPG entries of a channel. player_api answers with a bare list ([]) instead
+    of an object when it has no guide data; then the XMLTV export is used."""
+    data = player_api("get_simple_data_table", stream_id=channel["id"])
+    listings = data.get("epg_listings", []) if isinstance(data, dict) else []
+    if not listings and channel.get("epg"):
+        listings = xmltv_listings(channel["epg"], channel.get("days", 3))
+    return listings
+
+
 def timeshift_url(stream_id, start_str, duration):
     """start_str is "YYYY-MM-DD:HH-MM" (Amsterdam time), duration in minutes."""
     return (
@@ -56,14 +84,16 @@ def best_f1_channel():
     cats = {str(c["category_id"]): c["category_name"] for c in player_api("get_live_categories")}
     probed = []
     for ch in f1.candidates(player_api("get_live_streams"), cats):
-        listings = player_api("get_simple_data_table", stream_id=ch["id"]).get("epg_listings", [])
+        listings = epg_listings(ch)
         archived = f1.archived_programs(listings)
         if archived:
             start = archived[0]["start"]  # "2026-10-30 19:00:00"
             ch.update(f1.probe(timeshift_url(ch["id"], f"{start[:10]}:{start[11:13]}-{start[14:16]}", 1)))
         probed.append(ch)
     best = f1.pick_best(probed)
-    if best:
+    # Alleen een gemeten keuze onthouden; zonder gids valt er niets te meten en
+    # zou een gok 6 uur blijven hangen.
+    if best and best.get("height"):
         _f1_best.update(channel=best, at=time.time())
     return best
 
@@ -139,7 +169,7 @@ def api_f1():
     channel = best_f1_channel()
     if not channel:
         return jsonify({"channel": None, "programs": []})
-    listings = player_api("get_simple_data_table", stream_id=channel["id"]).get("epg_listings", [])
+    listings = epg_listings(channel)
     return jsonify({"channel": channel, "programs": f1.archived_programs(listings)})
 
 
@@ -170,18 +200,48 @@ def api_download():
     dl_id = f"{stream_id}_{ts}"
     _active_downloads[dl_id] = {"log": [], "done": False, "out": out, "duration": duration}
 
+    MAX_RESUMES = 6
+
     def run():
-        cmd = ["ffmpeg", "-y", "-i", url, "-c", "copy", "-stats", out]
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            universal_newlines=True
-        )
-        _active_downloads[dl_id]["proc"] = proc
-        for line in proc.stdout:
-            _active_downloads[dl_id]["log"].append(line.rstrip())
-        proc.wait()
-        _active_downloads[dl_id]["done"] = True
-        _active_downloads[dl_id]["returncode"] = proc.returncode
+        dl = _active_downloads[dl_id]
+
+        def fetch(target, begin, minutes):
+            cmd = ["ffmpeg", "-y", "-i", timeshift_url(stream_id, begin, minutes),
+                   "-c", "copy", "-stats", target]
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                universal_newlines=True
+            )
+            dl["proc"] = proc
+            for line in proc.stdout:
+                dl["log"].append(line.rstrip())
+            proc.wait()
+            return proc.returncode
+
+        rc = fetch(out, start_str, duration)
+        # Exit code 0 also means "the provider hung up". Check the real length and
+        # fetch what is missing, instead of reporting a 1 minute file as done.
+        for attempt in range(MAX_RESUMES):
+            if rc != 0 or dl.get("cancelled"):
+                break
+            got = f1.media_seconds(out)
+            plan = f1.resume_plan(start_str, duration, got)
+            if plan is None:
+                break
+            begin, minutes = plan
+            dl["log"].append(f"Onvolledig: {got / 60:.0f} van {duration} min. Rest ophalen vanaf {begin[-5:].replace('-', ':')} ({attempt + 1}/{MAX_RESUMES})")
+            part = out + ".part"
+            rc = fetch(part, begin, minutes)
+            if os.path.exists(part):
+                with open(out, "ab") as dst, open(part, "rb") as src:
+                    shutil.copyfileobj(src, dst)
+                os.remove(part)
+        got = f1.media_seconds(out)
+        complete = rc == 0 and f1.resume_plan(start_str, duration, got) is None
+        dl["got_min"] = round(got / 60)
+        dl["done"] = True
+        dl["returncode"] = rc
+        dl["complete"] = complete
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"dl_id": dl_id, "out": out, "duration": duration})
@@ -204,7 +264,8 @@ def api_status(dl_id):
                 sent += 1
             if dl["done"]:
                 rc = dl.get("returncode", -1)
-                yield f"data: {{\"done\": true, \"ok\": {str(rc == 0).lower()}, \"out\": \"{dl['out']}\"}}\n\n"
+                ok = str(dl.get("complete", rc == 0)).lower()
+                yield f"data: {{\"done\": true, \"ok\": {ok}, \"got\": {dl.get('got_min', 0)}, \"want\": {dl['duration']}, \"out\": \"{dl['out']}\"}}\n\n"
                 break
             time.sleep(0.5)
     return Response(stream(), mimetype="text/event-stream")
@@ -214,6 +275,7 @@ def api_status(dl_id):
 def api_cancel(dl_id):
     dl = _active_downloads.get(dl_id)
     if dl and "proc" in dl:
+        dl["cancelled"] = True
         dl["proc"].terminate()
         return jsonify({"ok": True})
     return jsonify({"ok": False})

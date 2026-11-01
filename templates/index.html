@@ -383,7 +383,10 @@ fetch("/api/f1")
     f1Channel = channel;
     const q = channel.height ? `${channel.height}p` : "kwaliteit onbekend";
     document.getElementById("f1-channel").textContent = `${channel.name} · ${q}`;
-    if (!programs.length) { status.textContent = "Nog niets in het archief."; return; }
+    if (!programs.length) {
+      status.textContent = "De provider geeft nu geen programmagids terug (EPG leeg). Vernieuw de pagina later.";
+      return;
+    }
     status.textContent = `${programs.length} programma's beschikbaar (laatste ${channel.days} dagen)`;
 
     const list = document.getElementById("f1-list");
@@ -453,7 +456,7 @@ function f1DownloadOne(box) {
       if (data.done || data.error) {
         es.close();
         state.className = "f1-state " + (data.ok ? "ok" : "err");
-        state.textContent = data.ok ? "✓ klaar" : "✗ fout";
+        state.textContent = data.ok ? "✓ klaar" : (data.got ? `✗ onvolledig (${data.got}/${data.want} min)` : "✗ fout");
         if (data.ok) {
           const log = document.getElementById("f1-log");
           log.style.display = "block";
@@ -686,7 +689,7 @@ document.getElementById("dl-btn").addEventListener("click", () => {
         activeEventSource.close();
         const d = document.createElement("div");
         d.className = data.ok ? "status-ok" : "status-err";
-        d.textContent = data.ok ? "✓ Download klaar!" : "✗ Fout bij downloaden";
+        d.textContent = data.ok ? "✓ Download klaar!" : (data.got ? `✗ Onvolledig: ${data.got} van ${data.want} min` : "✗ Fout bij downloaden");
         log.appendChild(d);
         log.scrollTop = log.scrollHeight;
         document.getElementById("dl-btn").disabled = false;

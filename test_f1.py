@@ -87,3 +87,36 @@ def test_session_label_reads_the_description():
     assert f1.session_label("US F1 GP Highlights", "It's lights out for the race in Austin.") == "Samenvatting"
     assert f1.session_label("Ted's Quali Notebook", "Ted looks back on qualifying.") is None
     assert f1.session_label("The F1 Show", "A sneak peek of the paddock.") is None
+
+
+XMLTV = b"""<?xml version="1.0" encoding="utf-8"?><tv>
+<channel id="SkySportsF1.uk"><display-name>x</display-name></channel>
+<programme start="20261030190000 +0100" stop="20261030210000 +0100" channel="SkySportsF1.uk" ><title>Live Mexico City F1 GP</title><desc>The opening Formula 1 practice session.</desc></programme>
+<programme start="20261030190000 +0100" stop="20261030210000 +0100" channel="Other.uk" ><title>Other</title></programme>
+<programme start="20261020190000 +0100" stop="20261020210000 +0100" channel="SkySportsF1.uk" ><title>Too old</title></programme>
+</tv>"""
+
+
+def test_xmltv_listings_filters_channel_and_window_and_feeds_archived_programs():
+    import io
+    from datetime import datetime, timezone
+    now = datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc).timestamp()
+    listings = f1.xmltv_listings(io.BytesIO(XMLTV), "SkySportsF1.uk", days=3, now_ts=now)
+    assert len(listings) == 1
+    assert listings[0]["start"] == "2026-10-30 19:00:00"   # Amsterdam time, as timeshift.php wants
+    progs = f1.archived_programs(listings, now_ts=now)
+    assert progs[0]["title"] == "Live Mexico City F1 GP" and progs[0]["session"] == "VT1"
+
+
+def test_resume_plan_complete_download_needs_nothing():
+    assert f1.resume_plan("2026-11-01:04-30", 120, 7200) is None
+    assert f1.resume_plan("2026-11-01:04-30", 120, 7195) is None   # a few seconds short is fine
+
+
+def test_resume_plan_asks_for_the_missing_rest_with_a_minute_of_overlap():
+    # 62 s gotten of 120 min: restart at 04:31 for the remaining 119 min
+    assert f1.resume_plan("2026-11-01:04-30", 120, 62.3) == ("2026-11-01:04-31", 119)
+
+
+def test_resume_plan_crosses_midnight():
+    assert f1.resume_plan("2026-10-31:23-30", 120, 2400) == ("2026-11-01:00-10", 80)
