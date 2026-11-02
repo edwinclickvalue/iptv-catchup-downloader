@@ -90,6 +90,17 @@ def session_label(title, description):
     t, d = title.lower(), description.lower()
     if "highlights" in t or "hlts" in t:
         return "Samenvatting"
+    m = re.search(r"\bpractice (\d)\b", t)
+    if m:
+        return f"VT{m.group(1)}"
+    if re.search(r"sprint (qualifying|shootout)", t):
+        return "Sprint-kwalificatie"
+    if re.search(r"\bqualifying\b", t):
+        return "Kwalificatie"
+    if re.search(r"\bsprint\b", t):
+        return "Sprint"
+    if re.search(r"\b(f1|formula 1) grand prix\b", t) and "live" in t:
+        return "Race"
     m = re.search(r"\b(opening|first|second|third|final)\b[^.]*\bpractice\b", d)
     if m:
         return f"VT{PRACTICE_NO[m.group(1)]}"
@@ -99,7 +110,10 @@ def session_label(title, description):
         return "Kwalificatie"
     if re.search(r"\bsprint\b", d) and "practice" not in d:
         return "Sprint"
-    if re.search(r"\bgrand prix\b|\bf1 gp\b", t) and re.search(r"\brace\b|lights out", d):
+    # Alleen de race zelf: "lights out" staat in de omschrijving, en de shows eromheen
+    # ("Grand Prix Sunday", "Chequered Flag", "Notebook") zijn het niet.
+    if (re.search(r"\bgrand prix\b|\bf1 gp\b", t) and "lights out" in d
+            and not re.search(r"sunday|saturday|chequered|notebook|show|wrapped|preview|press", t)):
         return "Race"
     return None
 
@@ -174,3 +188,53 @@ def media_seconds(path):
         return float(out)
     except (ValueError, subprocess.TimeoutExpired, OSError):
         return 0.0
+
+
+SKY_SERVICE_NAME = "SkySp F1 HD"
+SKY_SERVICE_FALLBACK = "3835"
+
+
+def sky_service_id(services):
+    """Sky's own id for Sky Sports F1 HD, from awk.epgsky.com/.../services."""
+    items = services.get("services", []) if isinstance(services, dict) else services
+    for svc in items:
+        if svc.get("t") == SKY_SERVICE_NAME:
+            return str(svc["sid"])
+    return SKY_SERVICE_FALLBACK
+
+
+def sky_listings(schedule):
+    """Guide entries from one day of Sky's schedule API, in the shape of the
+    player_api listings. Sky only serves today and later; past days are empty."""
+    out = []
+    for block in schedule.get("schedule", []) if isinstance(schedule, dict) else []:
+        for ev in block.get("events", []):
+            start = datetime.fromtimestamp(ev["st"], timezone.utc)
+            stop = start + timedelta(seconds=ev["d"])
+            out.append({
+                "title":           _b64(ev.get("t")),
+                "description":     _b64(ev.get("sy")),
+                "start":           start.astimezone(AMSTERDAM).strftime("%Y-%m-%d %H:%M:%S"),
+                "end":             stop.astimezone(AMSTERDAM).strftime("%Y-%m-%d %H:%M:%S"),
+                "start_timestamp": int(start.timestamp()),
+                "stop_timestamp":  int(stop.timestamp()),
+                "has_archive":     1,
+            })
+    return out
+
+
+def merge_history(history, fresh):
+    """Add fresh guide entries to the saved ones, keyed by start time; a newer
+    entry replaces an older one for the same slot. Returns the merged list."""
+    by_start = {int(e["start_timestamp"]): e for e in history}
+    for e in fresh:
+        by_start[int(e["start_timestamp"])] = e
+    return sorted(by_start.values(), key=lambda e: int(e["start_timestamp"]))
+
+
+def within_window(listings, days, now_ts=None):
+    """Entries that started inside the catch-up window; older ones are gone."""
+    if now_ts is None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+    cutoff = now_ts - days * 86400
+    return [e for e in listings if int(e["start_timestamp"]) >= cutoff]

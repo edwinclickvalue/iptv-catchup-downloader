@@ -47,25 +47,105 @@ _xmltv_cache = {}  # epg channel id -> (fetched at, listings)
 
 def xmltv_listings(channel_id, days):
     """Fallback guide. The 90 MB XMLTV export has data when player_api answers
-    with an empty list, as it did from 1-11-2026."""
+    with an empty list, as it did from 1-11-2026. When the export itself fails
+    (404 on 2-11-2026), the last good copy is used, minus what has left the
+    catch-up window."""
     hit = _xmltv_cache.get(channel_id)
     if hit and time.time() - hit[0] < XMLTV_CACHE_SECONDS:
         return hit[1]
     url = f"{SERVER}/xmltv.php?username={USER}&password={PASS}"
-    with urllib.request.urlopen(url, timeout=120) as r:
-        listings = f1.xmltv_listings(r, channel_id, days=int(days))
+    try:
+        with urllib.request.urlopen(url, timeout=120) as r:
+            listings = f1.xmltv_listings(r, channel_id, days=int(days))
+    except Exception:
+        if not hit:
+            raise
+        cutoff = time.time() - int(days) * 86400
+        return [e for e in hit[1] if e["start_timestamp"] >= cutoff]
     _xmltv_cache[channel_id] = (time.time(), listings)
     return listings
 
 
-def epg_listings(channel):
-    """EPG entries of a channel. player_api answers with a bare list ([]) instead
-    of an object when it has no guide data; then the XMLTV export is used."""
-    data = player_api("get_simple_data_table", stream_id=channel["id"])
-    listings = data.get("epg_listings", []) if isinstance(data, dict) else []
-    if not listings and channel.get("epg"):
-        listings = xmltv_listings(channel["epg"], channel.get("days", 3))
+SKY_API = "https://awk.epgsky.com/hawk/linear"
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "guide.json")
+
+
+def _get_json(url, timeout=30):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.load(r)
+
+
+def sky_guide(days):
+    """Third source: Sky's own schedule. Only today and later have data, so the
+    past days come from the saved history."""
+    sid = f1.sky_service_id(_get_json(f"{SKY_API}/services/4101/1"))
+    listings = []
+    for back in range(int(days), -2, -1):
+        day = (datetime.now() - timedelta(days=back)).strftime("%Y%m%d")
+        listings += f1.sky_listings(_get_json(f"{SKY_API}/schedule/{day}/{sid}"))
     return listings
+
+
+def _load_history(key):
+    try:
+        with open(HISTORY_FILE, encoding="utf-8") as fh:
+            return json.load(fh).get(key, [])
+    except (OSError, ValueError):
+        return []
+
+
+def _save_history(key, listings):
+    try:
+        data = {}
+        try:
+            with open(HISTORY_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            pass
+        data[key] = listings
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+        with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except OSError:
+        pass  # history is a bonus; never fail the page over it
+
+
+def _first_guide(sources):
+    """The first source that yields entries. A source that fails counts as empty,
+    so one broken endpoint cannot take the whole F1 block down."""
+    for source in sources:
+        try:
+            listings = source()
+        except Exception:
+            continue
+        if listings:
+            return listings
+    return []
+
+
+def epg_listings(channel):
+    """EPG entries of a channel, from the first source that answers: player_api
+    (answers [] or resets the connection when it has no guide), the provider's
+    XMLTV export, Sky's schedule API. Whatever comes back is merged into a saved
+    history, so days the sources no longer serve stay available while the
+    catch-up archive still holds them."""
+    days = int(channel.get("days", 3))
+
+    def player():
+        data = player_api("get_simple_data_table", stream_id=channel["id"])
+        return data.get("epg_listings", []) if isinstance(data, dict) else []
+
+    sources = [player]
+    if channel.get("epg"):
+        sources.append(lambda: xmltv_listings(channel["epg"], days))
+    sources.append(lambda: sky_guide(days))
+
+    key = channel.get("epg") or str(channel["id"])
+    fresh = _first_guide(sources)
+    history = f1.within_window(f1.merge_history(_load_history(key), fresh), days)
+    if fresh:
+        _save_history(key, history)
+    return history
 
 
 def timeshift_url(stream_id, start_str, duration):

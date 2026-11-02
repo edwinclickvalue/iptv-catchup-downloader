@@ -120,3 +120,38 @@ def test_resume_plan_asks_for_the_missing_rest_with_a_minute_of_overlap():
 
 def test_resume_plan_crosses_midnight():
     assert f1.resume_plan("2026-10-31:23-30", 120, 2400) == ("2026-11-01:00-10", 80)
+
+
+def test_session_label_from_sky_titles():
+    assert f1.session_label("Mexico City F1 GP: Practice 3", "") == "VT3"
+    assert f1.session_label("Mexico City F1 GP: Qualifying", "") == "Kwalificatie"
+    assert f1.session_label("Live Mexico City F1 Grand Prix", "It's lights out.") == "Race"
+    assert f1.session_label("Mexico City F1 GP", "") is None
+
+
+def test_sky_service_id_and_listings():
+    services = {"services": [{"t": "SkySp Main Ev HD", "sid": "1"}, {"t": "SkySp F1 HD", "sid": 3835}]}
+    assert f1.sky_service_id(services) == "3835"
+    assert f1.sky_service_id({"services": []}) == "3835"
+    day = {"schedule": [{"sid": "3835", "events": [
+        {"st": 1793562900, "d": 7500, "t": "Live Mexico City F1 Grand Prix", "sy": "It's lights out."}]}]}
+    [e] = f1.sky_listings(day)
+    assert e["start"] == "2026-11-01 20:55:00" and e["end"] == "2026-11-01 23:00:00"
+    assert f1.sky_listings({"schedule": [{"sid": "3835", "events": []}]}) == []
+    progs = f1.archived_programs([e], now_ts=1793600000)
+    assert progs[0]["session"] == "Race" and progs[0]["live"] is True
+
+
+def test_merge_history_replaces_same_slot_and_window_drops_old():
+    old = [{"start_timestamp": 100, "title": "a"}, {"start_timestamp": 200, "title": "b"}]
+    fresh = [{"start_timestamp": 200, "title": "B"}, {"start_timestamp": 300, "title": "c"}]
+    merged = f1.merge_history(old, fresh)
+    assert [e["title"] for e in merged] == ["a", "B", "c"]
+    assert [e["title"] for e in f1.within_window(merged, days=1, now_ts=100 + 86400 + 1)] == ["B", "c"]
+
+
+def test_pre_race_shows_are_not_the_race():
+    assert f1.session_label("Live Grand Prix Sunday:Mexico City", "Join Sky on the grid ahead of the start of the race.") is None
+    assert f1.session_label("Grand Prix Sunday:Mexico City", "Join Sky Sports F1 on the grid before lights out.") is None
+    assert f1.session_label("Live Chequered Flag: Mexico City", "As the chequered flag comes down on the race.") is None
+    assert f1.session_label("Live Mexico City F1 Grand Prix", "It's lights out for the Mexico City Grand Prix.") == "Race"
