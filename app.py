@@ -67,7 +67,8 @@ def xmltv_listings(channel_id, days):
 
 
 SKY_API = "https://awk.epgsky.com/hawk/linear"
-HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "guide.json")
+CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache"))
+HISTORY_FILE = os.path.join(CACHE_DIR, "guide.json")
 
 
 def _get_json(url, timeout=30):
@@ -363,4 +364,6 @@ def api_cancel(dl_id):
 
 if __name__ == "__main__":
     print("Open browser: http://localhost:5123")
-    app.run(port=5123, debug=False)
+    # HOST=0.0.0.0 in the NAS container; locally it stays on localhost.
+    app.run(host=os.environ.get("HOST", "127.0.0.1"),
+            port=int(os.environ.get("PORT", "5123")), debug=False)

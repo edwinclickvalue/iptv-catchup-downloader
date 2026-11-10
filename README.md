@@ -55,3 +55,24 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 | `DOWNLOAD_DIR` | Download folder (default: `~/Downloads`) |
 
 > `.env` is git-ignored — never commit your credentials.
+
+## On the Synology NAS
+
+Runs as a Docker container on the NAS, the same way as the household budget app:
+
+```bash
+./deploy.sh
+```
+
+Runs the tests, copies the last commit over SSH (tar), builds the image and restarts container `iptv`. Only committed code goes live.
+
+| What | Where |
+|---|---|
+| App | http://172.28.9.10:8774 (home network or VPN only; no password) |
+| Recordings | `/volume1/Video/IPTV` |
+| Guide history | `/volume1/docker/iptv/cache` |
+| Credentials | `/volume1/docker/iptv/.env` (`XTREAM_SERVER`, `XTREAM_USER`, `XTREAM_PASS`) |
+
+After changing `.env`, run `./deploy.sh` again: the container must be recreated to read it. Logs: `ssh claude@172.28.9.10 sudo /usr/local/bin/docker logs iptv`.
+
+The container sets `HOST=0.0.0.0`, `DOWNLOAD_DIR=/downloads` and `CACHE_DIR=/cache`; run locally, the app keeps `127.0.0.1:5123`, `~/Downloads` and `.cache/`.
