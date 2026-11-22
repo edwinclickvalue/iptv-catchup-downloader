@@ -238,7 +238,9 @@ def api_epg(stream_id):
             "description": desc,
             "start":       start_str,       # "2026-05-02 20:30:00"
             "end":         end_str,
-            "has_archive": e.get("has_archive", 0),
+            # The provider's flag lags hours behind; an ended programme on a
+            # catch-up channel is in the archive (see f1.archived_programs).
+            "has_archive": 1 if 0 < stop_ts <= now_ts else e.get("has_archive", 0),
         })
 
     programs.sort(key=lambda p: p["start"], reverse=True)

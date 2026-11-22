@@ -44,3 +44,16 @@ def test_refresh_expires_the_guide_cache_but_keeps_the_stale_copy(load_app, monk
 
     assert client.get("/api/f1?refresh=1").get_json() == {"channel": None, "programs": []}
     assert app._xmltv_cache["sky.f1"] == (0.0, listings)
+
+
+def test_manual_guide_offers_ended_programmes_the_provider_has_not_flagged(load_app, monkeypatch):
+    import io, json, time
+    app = load_app()
+    now = int(time.time())
+    entry = lambda start, stop: {"title": "", "description": "", "start": "s", "end": "e",
+                                 "start_timestamp": str(start), "stop_timestamp": str(stop), "has_archive": 0}
+    guide = {"epg_listings": [entry(now - 7200, now - 3600), entry(now - 600, now + 600)]}
+    monkeypatch.setattr(app.urllib.request, "urlopen",
+                        lambda *a, **k: io.BytesIO(json.dumps(guide).encode()))
+    flags = [p["has_archive"] for p in app.app.test_client().get("/api/epg/1").get_json()]
+    assert sorted(flags) == [0, 1]   # ended: downloadable; still on air: not yet

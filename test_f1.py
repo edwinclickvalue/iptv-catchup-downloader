@@ -53,11 +53,12 @@ def test_archived_programs_filters_and_sorts():
     listings = [
         listing("Live Mexico City F1 GP", "2026-10-30 19:00:00", "2026-10-30 21:00:00", now - 7000, now - 100),
         listing("The F1 Show", "2026-10-30 21:00:00", "2026-10-30 22:00:00", now - 100, now + 3000),  # on air
-        listing("Old show", "2026-10-29 10:00:00", "2026-10-29 11:00:00", now - 90000, now - 86400, archive=0),
+        # ended, but the provider has not flagged it yet: the flag lags, the archive has it
+        listing("Just ended", "2026-10-29 10:00:00", "2026-10-29 11:00:00", now - 90000, now - 86400, archive=0),
         listing("Paddock Uncut", "2026-10-29 11:00:00", "2026-10-29 11:30:00", now - 86000, now - 84000),
     ]
     progs = f1.archived_programs(listings, now_ts=now)
-    assert [p["title"] for p in progs] == ["Live Mexico City F1 GP", "Paddock Uncut"]
+    assert [p["title"] for p in progs] == ["Live Mexico City F1 GP", "Paddock Uncut", "Just ended"]
     assert progs[0]["live"] is True
     assert progs[1]["live"] is False
 

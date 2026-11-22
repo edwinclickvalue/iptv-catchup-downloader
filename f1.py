@@ -119,13 +119,16 @@ def session_label(title, description):
 
 
 def archived_programs(listings, now_ts=None):
-    """Programmes that already aired and are in the archive, newest first."""
+    """Programmes that already aired, newest first.
+
+    The provider's has_archive flag is not used: it lags hours behind (on
+    22-11-2026 the race that ended at 07:00 was still flagged 0 at 08:50, while
+    timeshift.php served it). Every channel here is a catch-up channel and the
+    caller has already cut the listings to the archive window."""
     if now_ts is None:
         now_ts = datetime.now(timezone.utc).timestamp()
     programs = []
     for e in listings:
-        if int(e.get("has_archive", 0)) != 1:
-            continue
         if int(e.get("stop_timestamp", 0)) > now_ts:
             continue  # still on air: the archive is not complete yet
         title, desc = _decode(e.get("title", "")), _decode(e.get("description", ""))
