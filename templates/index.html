@@ -279,6 +279,18 @@
   .f1-actions #f1-dl:hover:not(:disabled) { background: #e10600; }
   .f1-actions #f1-dl:disabled { background: #2a2a3a; }
 
+  /* Overzicht van wat al gedownload is; klapt open op klik. */
+  #files-card { margin-bottom: 24px; gap: 14px; }
+  #files-card summary { cursor: pointer; font-size: 0.95rem; font-weight: 600; color: #fff; }
+  #files-card summary span { font-weight: 400; color: #666; font-size: 0.8rem; margin-left: 6px; }
+  #files-folder { font-size: 0.75rem; color: #666; margin-top: 12px; word-break: break-all; }
+  #files-list { margin-top: 10px; max-height: 320px; overflow-y: auto;
+                border: 1px solid #2a2a3a; border-radius: 8px; background: #0f0f13; }
+  #files-list:empty { display: none; }
+  .file-item { padding: 10px 14px; border-bottom: 1px solid #1e1e2a; }
+  .file-item:last-child { border-bottom: none; }
+  .file-busy { font-size: 0.65rem; color: #7788ff; border: 1px solid #2a2a5a; border-radius: 4px; padding: 1px 5px; }
+
   ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
@@ -303,6 +315,12 @@
   </div>
   <div id="f1-log" style="display:none;font-size:0.78rem;color:#7a9;font-family:'SF Mono','Fira Mono',monospace"></div>
 </div>
+
+<details class="card" id="files-card">
+  <summary>Gedownload<span id="files-count"></span></summary>
+  <div id="files-folder"></div>
+  <div id="files-list"></div>
+</details>
 
 <div class="card">
 
@@ -389,7 +407,7 @@ function f1Load(refresh) {
 
   return fetch(refresh ? "/api/f1?refresh=1" : "/api/f1")
   .then(r => r.json())
-  .then(({channel, programs}) => {
+  .then(({channel, programs, auto}) => {
     if (!channel) { status.textContent = "Geen Sky Sports F1-zender met catch-up gevonden."; return; }
     f1Channel = channel;
     const q = channel.height ? `${channel.height}p` : "kwaliteit onbekend";
@@ -399,7 +417,7 @@ function f1Load(refresh) {
       return;
     }
     const at = new Date().toTimeString().slice(0, 5);
-    status.textContent = `${programs.length} programma's beschikbaar (laatste ${channel.days} dagen) · opgehaald ${at}`;
+    status.textContent = `${programs.length} programma's beschikbaar (laatste ${channel.days} dagen) · opgehaald ${at}${auto ? " · live race wordt automatisch gedownload" : ""}`;
 
     programs.forEach((p, i) => {
       const row = document.createElement("label");
@@ -517,6 +535,47 @@ document.getElementById("f1-dl").addEventListener("click", async () => {
   }
   f1Poll();
 });
+
+// --- Gedownload ---------------------------------------------------------
+// "F1_Live_Las_Vegas_F1_Grand_Prix_Race_20261122_0455.ts": naam + start van de uitzending.
+function fileParts(name) {
+  const m = name.match(/^(.*)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\.ts$/);
+  if (!m) return {title: name, aired: ""};
+  return {title: m[1].replace(/_/g, " "), aired: `${m[4]}-${m[3]}-${m[2]} ${m[5]}:${m[6]}`};
+}
+
+function fmtSize(bytes) {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1).replace(".", ",")} GB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
+function loadFiles() {
+  fetch("/api/files")
+    .then(r => r.json())
+    .then(({folder, files}) => {
+      document.getElementById("files-count").textContent = `(${files.length})`;
+      document.getElementById("files-folder").textContent = files.length ? `Map: ${folder}` : `Nog niets in ${folder}`;
+      const list = document.getElementById("files-list");
+      list.textContent = "";
+      files.forEach(f => {
+        const {title, aired} = fileParts(f.name);
+        const when = new Date(f.modified * 1000).toLocaleString("nl-NL", {day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"});
+        const row = document.createElement("div");
+        row.className = "file-item";
+        row.innerHTML = `<div class="epg-title"></div><div class="epg-meta"></div>`;
+        row.querySelector(".epg-title").textContent = title;
+        row.title = f.name;
+        const meta = row.querySelector(".epg-meta");
+        const add = (text, cls) => { const s = document.createElement("span"); s.textContent = text; if (cls) s.className = cls; meta.appendChild(s); };
+        if (aired) add(`uitzending ${aired}`);
+        add(fmtSize(f.size));
+        if (f.busy) add("bezig", "file-busy"); else add(`gedownload ${when}`);
+        list.appendChild(row);
+      });
+    })
+    .catch(() => { document.getElementById("files-folder").textContent = "Overzicht ophalen mislukt."; });
+}
+loadFiles();
+document.getElementById("files-card").addEventListener("toggle", e => { if (e.target.open) loadFiles(); });
 
 // --- Handmatig ----------------------------------------------------------
 let channels = [];

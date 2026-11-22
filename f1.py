@@ -138,10 +138,25 @@ def archived_programs(listings, now_ts=None):
             "session":     session_label(title, desc),
             "start":       e.get("start", ""),
             "end":         e.get("end", ""),
+            "end_ts":      int(e.get("stop_timestamp", 0)),
             "live":        title.lower().startswith("live"),
         })
     programs.sort(key=lambda p: p["start"], reverse=True)
     return programs
+
+
+def races_due(programs, now_ts, extra_min=0):
+    """The live race broadcasts that can be fetched in full: the slot in the
+    guide has passed, plus the margin kept for a race that runs over. Repeats
+    and the shows around the race are left out."""
+    return [p for p in programs
+            if p["session"] == "Race" and p["live"] and p["end_ts"] + extra_min * 60 <= now_ts]
+
+
+def padded_end(end_str, extra_min):
+    """"HH:MM" of a guide end time ("YYYY-MM-DD HH:MM:SS") plus a margin."""
+    end = datetime.strptime(end_str, "%Y-%m-%d %H:%M:%S") + timedelta(minutes=extra_min)
+    return end.strftime("%H:%M")
 
 
 def probe(url, timeout=30):

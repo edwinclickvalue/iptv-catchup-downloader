@@ -266,7 +266,7 @@ def api_f1():
     if not channel:
         return jsonify({"channel": None, "programs": []})
     listings = epg_listings(channel)
-    return jsonify({"channel": channel, "programs": f1.archived_programs(listings)})
+    return jsonify({"channel": channel, "programs": f1.archived_programs(listings), "auto": AUTO_RACE})
 
 
 MAX_RESUMES = 6
@@ -337,6 +337,13 @@ def _work():
         dl.update(state="done", done=True)
 
 
+def job_names(stream_id, name, start_date, start_time):
+    """Id and file of a download; both follow from channel, name and start."""
+    ts = start_date.replace("-", "") + "_" + start_time.replace(":", "")[:4].zfill(4)
+    safe = name.replace(" ", "_").replace("/", "-").replace("|", "").replace(":", "").strip("_")
+    return f"{stream_id}_{ts}", f"{DOWNLOAD_DIR}/{safe}_{ts}.ts"
+
+
 def enqueue_download(stream_id, name, start_date, start_time, end_time):
     """Put a download in the queue. Returns the job; a job that is still
     waiting or running is returned as it is instead of being queued twice."""
@@ -348,9 +355,7 @@ def enqueue_download(stream_id, name, start_date, start_time, end_time):
         end_min += 24 * 60
     duration = end_min - start_min
 
-    ts = start_date.replace("-", "") + f"_{sh:02d}{sm:02d}"
-    safe = name.replace(" ", "_").replace("/", "-").replace("|", "").replace(":", "").strip("_")
-    dl_id = f"{stream_id}_{ts}"
+    dl_id, out = job_names(stream_id, name, start_date, start_time)
 
     with _worker_lock:
         current = _active_downloads.get(dl_id)
@@ -360,7 +365,7 @@ def enqueue_download(stream_id, name, start_date, start_time, end_time):
         dl = {
             "id": dl_id, "name": name, "stream_id": stream_id,
             "start_str": f"{start_date}:{sh:02d}-{sm:02d}", "duration": duration,
-            "out": f"{DOWNLOAD_DIR}/{safe}_{ts}.ts",
+            "out": out,
             "log": [f"In de wachtrij, {waiting} download(s) ervoor."] if waiting else [],
             "state": "queued", "done": False,
         }
@@ -393,6 +398,90 @@ def api_downloads():
         }
         for dl in list(_active_downloads.values())
     ])
+
+
+@app.route("/api/files")
+def api_files():
+    """The recordings in the download folder, newest first. Read from disk, so
+    it also shows what was fetched before a restart or by the auto download."""
+    busy = {os.path.basename(dl["out"]) for dl in _active_downloads.values() if not dl["done"]}
+    files = []
+    try:
+        entries = list(os.scandir(DOWNLOAD_DIR))
+    except OSError:
+        entries = []
+    for entry in entries:
+        if not entry.name.endswith(".ts") or not entry.is_file():
+            continue
+        stat = entry.stat()
+        files.append({"name": entry.name, "size": stat.st_size,
+                      "modified": int(stat.st_mtime), "busy": entry.name in busy})
+    files.sort(key=lambda f: f["modified"], reverse=True)
+    return jsonify({"folder": DOWNLOAD_DIR, "files": files})
+
+
+# --- Automatic race download ---------------------------------------------
+# AUTO_RACE=1 (set on the NAS by deploy.sh) makes the app fetch every live race
+# broadcast by itself. Off by default, so a local run does not fill ~/Downloads.
+AUTO_RACE = os.environ.get("AUTO_RACE", "") == "1"
+AUTO_CHECK_SECONDS = int(os.environ.get("AUTO_CHECK_MINUTES", "15")) * 60
+AUTO_EXTRA_MIN = int(os.environ.get("AUTO_EXTRA_MINUTES", "30"))  # a race can run over its slot
+AUTO_TRIES = 3
+AUTO_FILE = os.path.join(CACHE_DIR, "auto.json")  # survives a restart: no race twice
+
+
+def _load_auto():
+    try:
+        with open(AUTO_FILE, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def auto_check():
+    """Queue the live races that have ended and are not on disk yet. Returns
+    the ids it queued."""
+    # A waiting or running job uses the one connection the provider allows;
+    # measuring the best channel would get in its way. Next round.
+    if any(not dl["done"] for dl in _active_downloads.values()):
+        return []
+    channel = best_f1_channel()
+    if not channel:
+        return []
+    programs = f1.archived_programs(epg_listings(channel))
+    state, queued = _load_auto(), []
+    for p in f1.races_due(programs, time.time(), AUTO_EXTRA_MIN):
+        date, start = p["start"][:10], p["start"][11:16]
+        name = f"F1 {p['title']} {p['session']}"  # same name as the page gives it
+        dl_id, out = job_names(channel["id"], name, date, start)
+        entry = state.setdefault(dl_id, {"title": p["title"], "tries": 0, "ok": False})
+        job = _active_downloads.get(dl_id)
+        if job and job.get("complete"):
+            entry["ok"] = True
+        elif entry["tries"] == 0 and os.path.exists(out):
+            entry["ok"] = True  # already fetched by hand
+        if entry["ok"] or entry["tries"] >= AUTO_TRIES:
+            continue
+        entry["tries"] += 1
+        enqueue_download(channel["id"], name, date, start, f1.padded_end(p["end"], AUTO_EXTRA_MIN))
+        queued.append(dl_id)
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(AUTO_FILE, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+    except OSError:
+        pass
+    return queued
+
+
+def _auto_loop():
+    while True:
+        try:
+            for dl_id in auto_check():
+                print(f"auto: race in de wachtrij gezet ({dl_id})", flush=True)
+        except Exception as exc:  # provider down: try again next round
+            print(f"auto: controle mislukt ({exc})", flush=True)
+        time.sleep(AUTO_CHECK_SECONDS)
 
 
 @app.route("/api/status/<dl_id>")
@@ -433,6 +522,8 @@ def api_cancel(dl_id):
 
 
 if __name__ == "__main__":
+    if AUTO_RACE:
+        threading.Thread(target=_auto_loop, daemon=True).start()
     print("Open browser: http://localhost:5123")
     # HOST=0.0.0.0 in the NAS container; locally it stays on localhost.
     app.run(host=os.environ.get("HOST", "127.0.0.1"),

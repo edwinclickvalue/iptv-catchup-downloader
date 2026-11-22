@@ -15,6 +15,7 @@ DIR=/volume1/docker/iptv
 DOWNLOADS=/volume1/Video/IPTV
 PORT=8774
 UID_GID=1037:100   # gebruiker claude, zodat de opnames van claude zijn
+# AUTO_RACE=1: de app haalt elke live uitgezonden race zelf op (zie README)
 # --group-add 101 (administrators): de Synology-ACL op /volume1/Video geeft schrijfrecht via die groep
 
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
@@ -38,7 +39,7 @@ ssh "$NAS" "set -e
   sudo /usr/local/bin/docker rm -f iptv >/dev/null 2>&1 || true
   sudo /usr/local/bin/docker run -d --name iptv --restart unless-stopped \
     -p $PORT:5123 --user $UID_GID --group-add 101 -v $DIR/cache:/cache -v $DOWNLOADS:/downloads \
-    --env-file $DIR/.env iptv:$REV >/dev/null"
+    -e AUTO_RACE=1 --env-file $DIR/.env iptv:$REV >/dev/null"
 
 echo "› controle"
 for _ in $(seq 30); do
