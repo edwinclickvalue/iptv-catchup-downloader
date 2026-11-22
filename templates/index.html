@@ -298,6 +298,7 @@
   <div class="f1-actions">
     <button class="ghost" id="f1-all" disabled>Alles</button>
     <button class="ghost" id="f1-none" disabled>Geen</button>
+    <button class="ghost" id="f1-refresh" disabled>Vernieuwen</button>
     <button id="f1-dl" disabled>Download geselecteerde</button>
   </div>
   <div id="f1-log" style="display:none;font-size:0.78rem;color:#7a9;font-family:'SF Mono','Fira Mono',monospace"></div>
@@ -375,21 +376,31 @@ function f1UpdateButton() {
   btn.textContent = n ? `Download geselecteerde (${n})` : "Download geselecteerde";
 }
 
-fetch("/api/f1")
+// refresh=true (knop Vernieuwen) slaat de gidscache op de server over.
+function f1Load(refresh) {
+  const status = document.getElementById("f1-status");
+  const list = document.getElementById("f1-list");
+  const refreshBtn = document.getElementById("f1-refresh");
+  ["f1-all", "f1-none", "f1-refresh"].forEach(id => document.getElementById(id).disabled = true);
+  if (refresh) status.textContent = "Nieuwe programma's ophalen...";
+  list.style.display = "none";
+  list.innerHTML = "";
+  f1UpdateButton();
+
+  return fetch(refresh ? "/api/f1?refresh=1" : "/api/f1")
   .then(r => r.json())
   .then(({channel, programs}) => {
-    const status = document.getElementById("f1-status");
     if (!channel) { status.textContent = "Geen Sky Sports F1-zender met catch-up gevonden."; return; }
     f1Channel = channel;
     const q = channel.height ? `${channel.height}p` : "kwaliteit onbekend";
     document.getElementById("f1-channel").textContent = `${channel.name} · ${q}`;
     if (!programs.length) {
-      status.textContent = "De provider geeft nu geen programmagids terug (EPG leeg). Vernieuw de pagina later.";
+      status.textContent = "De provider geeft nu geen programmagids terug (EPG leeg). Probeer later Vernieuwen.";
       return;
     }
-    status.textContent = `${programs.length} programma's beschikbaar (laatste ${channel.days} dagen)`;
+    const at = new Date().toTimeString().slice(0, 5);
+    status.textContent = `${programs.length} programma's beschikbaar (laatste ${channel.days} dagen) · opgehaald ${at}`;
 
-    const list = document.getElementById("f1-list");
     programs.forEach((p, i) => {
       const row = document.createElement("label");
       row.className = "f1-item";
@@ -417,8 +428,13 @@ fetch("/api/f1")
     document.getElementById("f1-none").disabled = false;
   })
   .catch(() => {
-    document.getElementById("f1-status").textContent = "F1-programma's ophalen mislukt.";
-  });
+    status.textContent = "F1-programma's ophalen mislukt.";
+  })
+  .finally(() => { refreshBtn.disabled = false; });
+}
+
+f1Load(false);
+document.getElementById("f1-refresh").addEventListener("click", () => f1Load(true));
 
 document.getElementById("f1-all").addEventListener("click", () => {
   f1Boxes().forEach(b => { if (!b.disabled) b.checked = true; });
@@ -471,7 +487,7 @@ function f1DownloadOne(box) {
 
 document.getElementById("f1-dl").addEventListener("click", async () => {
   const boxes = f1Boxes().filter(b => b.checked);
-  const btns = ["f1-dl", "f1-all", "f1-none"].map(id => document.getElementById(id));
+  const btns = ["f1-dl", "f1-all", "f1-none", "f1-refresh"].map(id => document.getElementById(id));
   btns.forEach(b => b.disabled = true);
   f1Boxes().forEach(b => b.disabled = true);
   for (const box of boxes) {

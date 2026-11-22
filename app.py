@@ -245,8 +245,19 @@ def api_epg(stream_id):
     return jsonify(programs)
 
 
+def expire_guide_cache():
+    """Make the next guide request go to the provider again. The stale copy
+    stays as the fallback for when the XMLTV export fails."""
+    for channel_id, (_, listings) in list(_xmltv_cache.items()):
+        _xmltv_cache[channel_id] = (0.0, listings)
+
+
 @app.route("/api/f1")
 def api_f1():
+    # ?refresh=1 (the Vernieuwen button) skips the 15 min guide cache. The
+    # measured best channel is kept: probing is slow and does not change.
+    if request.args.get("refresh"):
+        expire_guide_cache()
     channel = best_f1_channel()
     if not channel:
         return jsonify({"channel": None, "programs": []})

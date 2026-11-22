@@ -30,3 +30,17 @@ def test_cache_dir_from_environment(load_app, monkeypatch, tmp_path):
     monkeypatch.setenv("CACHE_DIR", str(tmp_path))
     app = load_app()
     assert app.HISTORY_FILE == os.path.join(str(tmp_path), "guide.json")
+
+
+def test_refresh_expires_the_guide_cache_but_keeps_the_stale_copy(load_app, monkeypatch):
+    app = load_app()
+    listings = [{"start_timestamp": 1}]
+    app._xmltv_cache["sky.f1"] = (app.time.time(), listings)
+    monkeypatch.setattr(app, "best_f1_channel", lambda: None)
+
+    client = app.app.test_client()
+    client.get("/api/f1")
+    assert app._xmltv_cache["sky.f1"][0] > 0          # plain load keeps the cache
+
+    assert client.get("/api/f1?refresh=1").get_json() == {"channel": None, "programs": []}
+    assert app._xmltv_cache["sky.f1"] == (0.0, listings)
