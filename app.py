@@ -265,8 +265,58 @@ def api_f1():
     channel = best_f1_channel()
     if not channel:
         return jsonify({"channel": None, "programs": []})
-    listings = epg_listings(channel)
-    return jsonify({"channel": channel, "programs": f1.archived_programs(listings), "auto": AUTO_RACE})
+    programs = f1.archived_programs(epg_listings(channel))
+    mark_downloaded(channel["id"], programs)
+    return jsonify({"channel": channel, "programs": programs, "auto": AUTO_RACE})
+
+
+# --- Download log ----------------------------------------------------------
+# Every finished download, with who started it: "handmatig" (the page) or
+# "automatisch" (the race watcher). It outlives a restart and a recording that
+# was moved or deleted, so nothing is fetched twice.
+LOG_FILE = os.path.join(CACHE_DIR, "downloads.json")
+
+
+def _load_log():
+    try:
+        with open(LOG_FILE, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return []
+
+
+def _record(dl):
+    try:
+        size = os.path.getsize(dl["out"])
+    except OSError:
+        size = 0
+    entry = {
+        "id": dl["id"], "name": dl["name"], "file": os.path.basename(dl["out"]),
+        "source": dl["source"], "ok": bool(dl.get("complete")),
+        "got": dl.get("got_min", 0), "want": dl["duration"],
+        "finished": int(time.time()), "size": size,
+    }
+    try:
+        log = [e for e in _load_log() if e["id"] != dl["id"]] + [entry]  # a retry replaces the earlier try
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(LOG_FILE, "w", encoding="utf-8") as fh:
+            json.dump(log, fh)
+    except OSError:
+        pass  # the log is a bonus; never fail a download over it
+
+
+def mark_downloaded(channel_id, programs):
+    """Tell per programme whether it was fetched before and by whom: the source
+    from the log, or "op schijf" for a recording from before the log existed."""
+    done = {e["id"]: e["source"] for e in _load_log() if e["ok"]}
+    try:
+        names = os.listdir(DOWNLOAD_DIR)
+    except OSError:
+        names = []
+    for p in programs:
+        ts = p["start"][:10].replace("-", "") + "_" + p["start"][11:16].replace(":", "")
+        on_disk = any(n.startswith("F1_") and n.endswith(f"_{ts}.ts") for n in names)
+        p["downloaded"] = done.get(f"{channel_id}_{ts}") or ("op schijf" if on_disk else "")
 
 
 MAX_RESUMES = 6
@@ -334,6 +384,7 @@ def _work():
         except Exception as exc:  # one broken job must not stop the queue
             dl["log"].append(f"Fout: {exc}")
             dl.update(returncode=-1, complete=False)
+        _record(dl)
         dl.update(state="done", done=True)
 
 
@@ -344,9 +395,10 @@ def job_names(stream_id, name, start_date, start_time):
     return f"{stream_id}_{ts}", f"{DOWNLOAD_DIR}/{safe}_{ts}.ts"
 
 
-def enqueue_download(stream_id, name, start_date, start_time, end_time):
+def enqueue_download(stream_id, name, start_date, start_time, end_time, source="handmatig"):
     """Put a download in the queue. Returns the job; a job that is still
-    waiting or running is returned as it is instead of being queued twice."""
+    waiting or running is returned as it is instead of being queued twice.
+    source says who asked: "handmatig" or "automatisch"."""
     sh, sm = map(int, start_time.split(":"))
     eh, em = map(int, end_time.split(":"))
     start_min = sh * 60 + sm
@@ -363,7 +415,7 @@ def enqueue_download(stream_id, name, start_date, start_time, end_time):
             return current
         waiting = sum(1 for d in _active_downloads.values() if not d["done"])
         dl = {
-            "id": dl_id, "name": name, "stream_id": stream_id,
+            "id": dl_id, "name": name, "stream_id": stream_id, "source": source,
             "start_str": f"{start_date}:{sh:02d}-{sm:02d}", "duration": duration,
             "out": out,
             "log": [f"In de wachtrij, {waiting} download(s) ervoor."] if waiting else [],
@@ -391,7 +443,7 @@ def api_downloads():
     the queue stands."""
     return jsonify([
         {
-            "id": dl["id"], "name": dl["name"], "stream_id": dl["stream_id"],
+            "id": dl["id"], "name": dl["name"], "stream_id": dl["stream_id"], "source": dl["source"],
             "state": dl["state"], "ok": bool(dl.get("complete")),
             "cancelled": bool(dl.get("cancelled")), "progress": dl.get("progress", ""),
             "got": dl.get("got_min", 0), "want": dl["duration"], "out": dl["out"],
@@ -405,6 +457,7 @@ def api_files():
     """The recordings in the download folder, newest first. Read from disk, so
     it also shows what was fetched before a restart or by the auto download."""
     busy = {os.path.basename(dl["out"]) for dl in _active_downloads.values() if not dl["done"]}
+    log = {e["file"]: e for e in _load_log()}
     files = []
     try:
         entries = list(os.scandir(DOWNLOAD_DIR))
@@ -414,8 +467,15 @@ def api_files():
         if not entry.name.endswith(".ts") or not entry.is_file():
             continue
         stat = entry.stat()
+        known = log.pop(entry.name, None)
         files.append({"name": entry.name, "size": stat.st_size,
-                      "modified": int(stat.st_mtime), "busy": entry.name in busy})
+                      "modified": int(stat.st_mtime), "busy": entry.name in busy,
+                      "source": known["source"] if known else "",
+                      "incomplete": bool(known) and not known["ok"], "missing": False})
+    # Fetched once, but moved or deleted since: still part of the history.
+    files += [{"name": e["file"], "size": e["size"], "modified": e["finished"], "busy": False,
+               "source": e["source"], "incomplete": False, "missing": True}
+              for e in log.values() if e["ok"]]
     files.sort(key=lambda f: f["modified"], reverse=True)
     return jsonify({"folder": DOWNLOAD_DIR, "files": files})
 
@@ -450,20 +510,21 @@ def auto_check():
         return []
     programs = f1.archived_programs(epg_listings(channel))
     state, queued = _load_auto(), []
+    done = {e["id"] for e in _load_log() if e["ok"]}  # by hand or automatic, also when the file is gone
     for p in f1.races_due(programs, time.time(), AUTO_EXTRA_MIN):
         date, start = p["start"][:10], p["start"][11:16]
         name = f"F1 {p['title']} {p['session']}"  # same name as the page gives it
         dl_id, out = job_names(channel["id"], name, date, start)
         entry = state.setdefault(dl_id, {"title": p["title"], "tries": 0, "ok": False})
-        job = _active_downloads.get(dl_id)
-        if job and job.get("complete"):
+        if dl_id in done:
             entry["ok"] = True
         elif entry["tries"] == 0 and os.path.exists(out):
-            entry["ok"] = True  # already fetched by hand
+            entry["ok"] = True  # on disk from before the log existed
         if entry["ok"] or entry["tries"] >= AUTO_TRIES:
             continue
         entry["tries"] += 1
-        enqueue_download(channel["id"], name, date, start, f1.padded_end(p["end"], AUTO_EXTRA_MIN))
+        enqueue_download(channel["id"], name, date, start,
+                         f1.padded_end(p["end"], AUTO_EXTRA_MIN), source="automatisch")
         queued.append(dl_id)
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)

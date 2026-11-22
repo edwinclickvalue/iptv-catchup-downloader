@@ -288,7 +288,10 @@
                 border: 1px solid #2a2a3a; border-radius: 8px; background: #0f0f13; }
   #files-list:empty { display: none; }
   .file-item { padding: 10px 14px; border-bottom: 1px solid #1e1e2a; }
+  .file-item .epg-meta { flex-wrap: wrap; align-items: center; row-gap: 4px; }
   .file-item:last-child { border-bottom: none; }
+  .file-source { font-size: 0.65rem; color: #aaa; border: 1px solid #2a2a3a; border-radius: 4px; padding: 1px 5px; }
+  .file-warn { font-size: 0.65rem; color: #c93; border: 1px solid #4a3a1a; border-radius: 4px; padding: 1px 5px; }
   .file-busy { font-size: 0.65rem; color: #7788ff; border: 1px solid #2a2a5a; border-radius: 4px; padding: 1px 5px; }
 
   ::-webkit-scrollbar { width: 5px; }
@@ -437,6 +440,11 @@ function f1Load(refresh) {
       row.querySelector(".epg-title").textContent = p.title;
       row.querySelector(".f1-desc").textContent = p.description;
       row.querySelector(".f1-desc").title = p.description;
+      if (p.downloaded) {  // eerder gehaald: handmatig, automatisch of al op schijf
+        const state = row.querySelector(".f1-state");
+        state.className = "f1-state ok";
+        state.textContent = `✓ ${p.downloaded}`;
+      }
       row.querySelector("input").program = p;
       row.querySelector("input").addEventListener("change", f1UpdateButton);
       list.appendChild(row);
@@ -473,7 +481,7 @@ function f1JobId(p) {
 function f1JobText(job) {
   if (job.state === "queued") return "in wachtrij";
   if (job.state === "running") return job.progress || "bezig...";
-  if (job.ok) return "✓ klaar";
+  if (job.ok) return `✓ ${job.source}`;
   if (job.cancelled) return "✗ geannuleerd";
   return job.got ? `✗ onvolledig (${job.got}/${job.want} min)` : "✗ fout";
 }
@@ -569,6 +577,9 @@ function loadFiles() {
         if (aired) add(`uitzending ${aired}`);
         add(fmtSize(f.size));
         if (f.busy) add("bezig", "file-busy"); else add(`gedownload ${when}`);
+        if (f.source) add(f.source, "file-source");
+        if (f.incomplete) add("onvolledig", "file-warn");
+        if (f.missing) add("niet meer in map", "file-warn");
         list.appendChild(row);
       });
     })

@@ -10,7 +10,8 @@ import pytest
 @pytest.fixture
 def app(monkeypatch, tmp_path):
     for key, value in {"XTREAM_SERVER": "http://x", "XTREAM_USER": "u", "XTREAM_PASS": "p",
-                       "DOWNLOAD_DIR": str(tmp_path)}.items():
+                       "DOWNLOAD_DIR": str(tmp_path),
+                       "CACHE_DIR": str(tmp_path / "cache")}.items():
         monkeypatch.setenv(key, value)
     sys.modules.pop("app", None)
     yield importlib.import_module("app")
