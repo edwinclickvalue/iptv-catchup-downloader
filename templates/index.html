@@ -426,6 +426,7 @@ function f1Load(refresh) {
     list.style.display = "block";
     document.getElementById("f1-all").disabled = false;
     document.getElementById("f1-none").disabled = false;
+    f1Poll();
   })
   .catch(() => {
     status.textContent = "F1-programma's ophalen mislukt.";
@@ -445,58 +446,76 @@ document.getElementById("f1-none").addEventListener("click", () => {
   f1UpdateButton();
 });
 
-// Eén voor één: de meeste IPTV-abonnementen staan maar één verbinding toe.
-function f1DownloadOne(box) {
-  const p = box.program;
-  const state = box.closest(".f1-item").querySelector(".f1-state");
-  state.className = "f1-state busy";
-  state.textContent = "bezig...";
-  return fetch("/api/download", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-      stream_id: f1Channel.id,
-      name: `F1 ${p.title}${p.session ? ` ${p.session}${p.live ? "" : " herhaling"}` : ""}`,
-      date: p.start.slice(0, 10),
-      start_time: p.start.slice(11, 16),
-      end_time: p.end.slice(11, 16),
-    }),
-  })
-  .then(r => r.json())
-  .then(({dl_id, out}) => new Promise(resolve => {
-    const es = new EventSource(`/api/status/${dl_id}`);
-    es.onmessage = e => {
-      const data = JSON.parse(e.data);
-      const t = data.line && data.line.match(/time=(\d+:\d+:\d+)/);
-      if (t) state.textContent = t[1];
-      if (data.done || data.error) {
-        es.close();
-        state.className = "f1-state " + (data.ok ? "ok" : "err");
-        state.textContent = data.ok ? "✓ klaar" : (data.got ? `✗ onvolledig (${data.got}/${data.want} min)` : "✗ fout");
-        if (data.ok) {
-          const log = document.getElementById("f1-log");
-          log.style.display = "block";
-          log.insertAdjacentHTML("beforeend", "<div></div>");
-          log.lastElementChild.textContent = `📁 ${out}`;
-        }
-        resolve();
-      }
-    };
-  }));
+// De wachtrij staat op de server: één download tegelijk (de meeste
+// IPTV-abonnementen staan maar één verbinding toe), ook met de browser dicht.
+function f1JobId(p) {
+  return `${f1Channel.id}_${p.start.slice(0, 10).replace(/-/g, "")}_${p.start.slice(11, 13)}${p.start.slice(14, 16)}`;
+}
+
+function f1JobText(job) {
+  if (job.state === "queued") return "in wachtrij";
+  if (job.state === "running") return job.progress || "bezig...";
+  if (job.ok) return "✓ klaar";
+  if (job.cancelled) return "✗ geannuleerd";
+  return job.got ? `✗ onvolledig (${job.got}/${job.want} min)` : "✗ fout";
+}
+
+// Zet de stand van de wachtrij op de rijen; ook na het heropenen van de pagina.
+let f1PollTimer = null;
+function f1Poll() {
+  clearTimeout(f1PollTimer);
+  if (!f1Channel) return;
+  fetch("/api/downloads")
+    .then(r => r.json())
+    .then(jobs => {
+      const byId = Object.fromEntries(jobs.map(j => [j.id, j]));
+      let open = false;
+      f1Boxes().forEach(box => {
+        const job = byId[f1JobId(box.program)];
+        if (!job) return;
+        const waiting = job.state !== "done";
+        open = open || waiting;
+        if (waiting) box.checked = false;
+        box.disabled = waiting;
+        const state = box.closest(".f1-item").querySelector(".f1-state");
+        state.className = "f1-state " + (waiting ? "busy" : job.ok ? "ok" : "err");
+        state.textContent = f1JobText(job);
+      });
+      f1UpdateButton();
+
+      const log = document.getElementById("f1-log");
+      const done = jobs.filter(j => String(j.stream_id) === String(f1Channel.id) && j.ok);
+      log.style.display = done.length ? "block" : "none";
+      log.textContent = "";
+      done.forEach(j => {
+        const d = document.createElement("div");
+        d.textContent = `📁 ${j.out}`;
+        log.appendChild(d);
+      });
+      if (open) f1PollTimer = setTimeout(f1Poll, 2000);
+    })
+    .catch(() => { f1PollTimer = setTimeout(f1Poll, 5000); });
 }
 
 document.getElementById("f1-dl").addEventListener("click", async () => {
   const boxes = f1Boxes().filter(b => b.checked);
-  const btns = ["f1-dl", "f1-all", "f1-none", "f1-refresh"].map(id => document.getElementById(id));
-  btns.forEach(b => b.disabled = true);
-  f1Boxes().forEach(b => b.disabled = true);
-  for (const box of boxes) {
-    await f1DownloadOne(box).catch(() => {});
+  document.getElementById("f1-dl").disabled = true;
+  for (const box of boxes) {  // één voor één: de wachtrij houdt de volgorde van de lijst
+    const p = box.program;
+    await fetch("/api/download", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        stream_id: f1Channel.id,
+        name: `F1 ${p.title}${p.session ? ` ${p.session}${p.live ? "" : " herhaling"}` : ""}`,
+        date: p.start.slice(0, 10),
+        start_time: p.start.slice(11, 16),
+        end_time: p.end.slice(11, 16),
+      }),
+    }).catch(() => {});
     box.checked = false;
   }
-  f1Boxes().forEach(b => b.disabled = false);
-  btns.forEach(b => b.disabled = false);
-  f1UpdateButton();
+  f1Poll();
 });
 
 // --- Handmatig ----------------------------------------------------------

@@ -3,6 +3,8 @@ from flask import Flask, jsonify, render_template, request, Response
 import base64
 import json
 import os
+import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -267,15 +269,77 @@ def api_f1():
     return jsonify({"channel": channel, "programs": f1.archived_programs(listings)})
 
 
-@app.route("/api/download", methods=["POST"])
-def api_download():
-    body = request.json
-    stream_id  = body["stream_id"]
-    start_date = body["date"]        # YYYY-MM-DD
-    start_time = body["start_time"]  # HH:MM
-    end_time   = body["end_time"]    # HH:MM
-    name       = body["name"]
+MAX_RESUMES = 6
+_PROGRESS = re.compile(r"time=(\d+:\d+:\d+)")
 
+# The queue lives on the server, so downloads go on with the browser closed.
+# One worker: most IPTV subscriptions allow a single connection.
+_queue = queue.Queue()
+_worker = {"thread": None}
+_worker_lock = threading.Lock()
+
+
+def _run_download(dl_id):
+    dl = _active_downloads[dl_id]
+    stream_id, start_str, duration, out = dl["stream_id"], dl["start_str"], dl["duration"], dl["out"]
+
+    def fetch(target, begin, minutes):
+        cmd = ["ffmpeg", "-y", "-i", timeshift_url(stream_id, begin, minutes),
+               "-c", "copy", "-stats", target]
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True
+        )
+        dl["proc"] = proc
+        for line in proc.stdout:
+            dl["log"].append(line.rstrip())
+            seen = _PROGRESS.search(line)
+            if seen:
+                dl["progress"] = seen.group(1)
+        proc.wait()
+        return proc.returncode
+
+    rc = fetch(out, start_str, duration)
+    # Exit code 0 also means "the provider hung up". Check the real length and
+    # fetch what is missing, instead of reporting a 1 minute file as done.
+    for attempt in range(MAX_RESUMES):
+        if rc != 0 or dl.get("cancelled"):
+            break
+        got = f1.media_seconds(out)
+        plan = f1.resume_plan(start_str, duration, got)
+        if plan is None:
+            break
+        begin, minutes = plan
+        dl["log"].append(f"Onvolledig: {got / 60:.0f} van {duration} min. Rest ophalen vanaf {begin[-5:].replace('-', ':')} ({attempt + 1}/{MAX_RESUMES})")
+        part = out + ".part"
+        rc = fetch(part, begin, minutes)
+        if os.path.exists(part):
+            with open(out, "ab") as dst, open(part, "rb") as src:
+                shutil.copyfileobj(src, dst)
+            os.remove(part)
+    got = f1.media_seconds(out)
+    dl["got_min"] = round(got / 60)
+    dl["returncode"] = rc
+    dl["complete"] = rc == 0 and f1.resume_plan(start_str, duration, got) is None
+
+
+def _work():
+    while True:
+        dl = _active_downloads.get(_queue.get())
+        if dl is None or dl["done"]:
+            continue  # cancelled while it waited
+        dl["state"] = "running"
+        try:
+            _run_download(dl["id"])
+        except Exception as exc:  # one broken job must not stop the queue
+            dl["log"].append(f"Fout: {exc}")
+            dl.update(returncode=-1, complete=False)
+        dl.update(state="done", done=True)
+
+
+def enqueue_download(stream_id, name, start_date, start_time, end_time):
+    """Put a download in the queue. Returns the job; a job that is still
+    waiting or running is returned as it is instead of being queued twice."""
     sh, sm = map(int, start_time.split(":"))
     eh, em = map(int, end_time.split(":"))
     start_min = sh * 60 + sm
@@ -286,59 +350,49 @@ def api_download():
 
     ts = start_date.replace("-", "") + f"_{sh:02d}{sm:02d}"
     safe = name.replace(" ", "_").replace("/", "-").replace("|", "").replace(":", "").strip("_")
-    out  = f"{DOWNLOAD_DIR}/{safe}_{ts}.ts"
-
-    start_str = f"{start_date}:{sh:02d}-{sm:02d}"
-    url = timeshift_url(stream_id, start_str, duration)
-
     dl_id = f"{stream_id}_{ts}"
-    _active_downloads[dl_id] = {"log": [], "done": False, "out": out, "duration": duration}
 
-    MAX_RESUMES = 6
+    with _worker_lock:
+        current = _active_downloads.get(dl_id)
+        if current and not current["done"]:
+            return current
+        waiting = sum(1 for d in _active_downloads.values() if not d["done"])
+        dl = {
+            "id": dl_id, "name": name, "stream_id": stream_id,
+            "start_str": f"{start_date}:{sh:02d}-{sm:02d}", "duration": duration,
+            "out": f"{DOWNLOAD_DIR}/{safe}_{ts}.ts",
+            "log": [f"In de wachtrij, {waiting} download(s) ervoor."] if waiting else [],
+            "state": "queued", "done": False,
+        }
+        _active_downloads[dl_id] = dl
+        _queue.put(dl_id)
+        if _worker["thread"] is None:
+            _worker["thread"] = threading.Thread(target=_work, daemon=True)
+            _worker["thread"].start()
+    return dl
 
-    def run():
-        dl = _active_downloads[dl_id]
 
-        def fetch(target, begin, minutes):
-            cmd = ["ffmpeg", "-y", "-i", timeshift_url(stream_id, begin, minutes),
-                   "-c", "copy", "-stats", target]
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                universal_newlines=True
-            )
-            dl["proc"] = proc
-            for line in proc.stdout:
-                dl["log"].append(line.rstrip())
-            proc.wait()
-            return proc.returncode
+@app.route("/api/download", methods=["POST"])
+def api_download():
+    body = request.json
+    dl = enqueue_download(body["stream_id"], body["name"], body["date"],
+                          body["start_time"], body["end_time"])
+    return jsonify({"dl_id": dl["id"], "out": dl["out"], "duration": dl["duration"]})
 
-        rc = fetch(out, start_str, duration)
-        # Exit code 0 also means "the provider hung up". Check the real length and
-        # fetch what is missing, instead of reporting a 1 minute file as done.
-        for attempt in range(MAX_RESUMES):
-            if rc != 0 or dl.get("cancelled"):
-                break
-            got = f1.media_seconds(out)
-            plan = f1.resume_plan(start_str, duration, got)
-            if plan is None:
-                break
-            begin, minutes = plan
-            dl["log"].append(f"Onvolledig: {got / 60:.0f} van {duration} min. Rest ophalen vanaf {begin[-5:].replace('-', ':')} ({attempt + 1}/{MAX_RESUMES})")
-            part = out + ".part"
-            rc = fetch(part, begin, minutes)
-            if os.path.exists(part):
-                with open(out, "ab") as dst, open(part, "rb") as src:
-                    shutil.copyfileobj(src, dst)
-                os.remove(part)
-        got = f1.media_seconds(out)
-        complete = rc == 0 and f1.resume_plan(start_str, duration, got) is None
-        dl["got_min"] = round(got / 60)
-        dl["done"] = True
-        dl["returncode"] = rc
-        dl["complete"] = complete
 
-    threading.Thread(target=run, daemon=True).start()
-    return jsonify({"dl_id": dl_id, "out": out, "duration": duration})
+@app.route("/api/downloads")
+def api_downloads():
+    """Every job since the server started, so a reopened page can show where
+    the queue stands."""
+    return jsonify([
+        {
+            "id": dl["id"], "name": dl["name"], "stream_id": dl["stream_id"],
+            "state": dl["state"], "ok": bool(dl.get("complete")),
+            "cancelled": bool(dl.get("cancelled")), "progress": dl.get("progress", ""),
+            "got": dl.get("got_min", 0), "want": dl["duration"], "out": dl["out"],
+        }
+        for dl in list(_active_downloads.values())
+    ])
 
 
 @app.route("/api/status/<dl_id>")
@@ -368,6 +422,9 @@ def api_status(dl_id):
 @app.route("/api/cancel/<dl_id>", methods=["POST"])
 def api_cancel(dl_id):
     dl = _active_downloads.get(dl_id)
+    if dl and dl["state"] == "queued":  # not started: the worker skips it
+        dl.update(cancelled=True, state="done", done=True, returncode=-1, complete=False)
+        return jsonify({"ok": True})
     if dl and "proc" in dl:
         dl["cancelled"] = True
         dl["proc"].terminate()
